@@ -156,13 +156,15 @@ if [[ -n "$REPO_FAIL2BAN_DIR" ]]; then
         esc=$(printf '%s' "$ABUSE_APIKEY" | sed -e 's/[\/&]/\\&/g')
         # replace placeholder $APIKEYS (works whether quoted or not)
         sed -i.bak -E "s/\\\$APIKEYS/${esc}/g" "$dst" || true
+        dst="/etc/fail2ban/action.d/abuseipdb.conf"
+        sed -i.bak -E "s/\\\$APIKEYS/${esc}/g" "$dst" || true
         chown root:root "$dst"
         chmod 755 "$dst"
         echo "Injected AbuseIPDB API key into $dst (backup: ${dst}.bak)"
     fi
 
     # If user approved automated reporting, uncomment abuseipdb lines in deployed configs (make backups)
-    if [[ "$ABUSE_ENABLE" == "yes" && "$ABUSE_APPROVED" == "yes" ]]; then
+    if [[ "$ABUSE_APPROVED" == "yes" ]]; then
         echo "Enabling AbuseIPDB lines in deployed jail/action configs (backups created with .bak)"
         # uncomment lines mentioning abuseipdb in jail.local and jail.d files
         if [[ -f /etc/fail2ban/jail.local ]]; then
