@@ -1,0 +1,51 @@
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+
+[apache-404]
+enabled = true
+port = http,https
+filter = apache-404
+logpath = /home/*/logs/*.access_log
+bantime = 600
+findtime = 60
+maxretry = 10
+#action = %(action_mwl)s abuseipdb[abuseipdb_category="18,22"]
+
+[apache-403]
+enabled = true
+port = http,https
+filter = apache-403
+logpath = /home/*/logs/*.access_log
+bantime = 1800
+findtime = 60
+maxretry = 6
+#action = %(action_mwl)s abuseipdb[abuseipdb_category="21"]
+
+[cp-404]
+enabled = true
+port = http,https
+filter = cp-404
+logpath = /usr/local/lsws/logs/access.log
+bantime = 1800
+findtime = 60
+maxretry = 2
+#action = %(action_mwl)s abuseipdb[abuseipdb_category="21"]
+
+[pure-ftpd]
+enabled  = true
+port     = ftp,ftp-data,ftps,ftps-data
+filter   = pure-ftpd
+logpath  = /var/log/syslog
+maxretry = 3
+findtime = 60
+bantime  = 3600
+#action = %(action_mwl)s abuseipdb[abuseipdb_category="18"]
+
+[apache-badbots]
+enabled = true
+port = http,https
+filter = apache-badbots
+logpath = /home/*/logs/*.access_log
+maxretry = 1
+bantime = -1
+findtime = 600
