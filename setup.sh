@@ -12,12 +12,9 @@ require_root() {
 }
 require_root
 
-echo "==> apt update && install required packages"
+echo "==> Install required packages"
 apt update -y
 apt install -y git curl iproute2 lm-sensors fail2ban || { echo "apt install failed"; exit 1; }
-
-# Optional helpers for actions/backups (do not remove existing firewalls)
-apt install -y iptables-persistent nftables ufw firewalld --no-install-recommends || true
 
 detect_firewall() {
     if systemctl is-active --quiet firewalld 2>/dev/null; then
@@ -50,6 +47,7 @@ backup_firewall() {
         iptables)
             command -v iptables-save >/dev/null 2>&1 && iptables-save > "$BACKUP_DIR/iptables.backup" 2>/dev/null || true
             ;;
+        none) ;;
     esac
 }
 
@@ -63,14 +61,14 @@ choose_banaction() {
     esac
 }
 
-echo "==> Detecting and backing up firewall (no disabling)"
+echo "==> Detect firewall (no disabling) and backup"
 FW=$(detect_firewall)
-echo "Detected firewall: $FW"
+echo "Detected: $FW"
 backup_firewall "$FW"
 BANACTION=$(choose_banaction "$FW")
-echo "Using Fail2Ban banaction: $BANACTION"
+echo "Selected Fail2Ban banaction: $BANACTION"
 
-echo "==> Writing Fail2Ban drop-in for banaction"
+echo "==> Write Fail2Ban banaction drop-in"
 mkdir -p /etc/fail2ban/jail.d
 cat > /etc/fail2ban/jail.d/00-serverprofile-banaction.conf <<EOF
 [DEFAULT]
@@ -78,44 +76,66 @@ banaction = $BANACTION
 EOF
 chmod 644 /etc/fail2ban/jail.d/00-serverprofile-banaction.conf
 
-# clone repo
-echo "==> Cloning repo to $CLONE_DIR"
+echo "==> Clone repo to $CLONE_DIR"
 rm -rf "$CLONE_DIR"
 git clone --depth=1 "$REPO_URL" "$CLONE_DIR"
-
 if [[ ! -d "$CLONE_DIR" ]]; then
-    echo "ERROR: clone failed"
-    exit 1
+    echo "ERROR: clone failed"; exit 1
 fi
-
 trap 'rm -rf "$CLONE_DIR"' EXIT
 
-# locate serverinfo.sh
-CANDIDATES=(
-    "$CLONE_DIR/serverinfo.sh"
-    "$CLONE_DIR/serverinfo-setup/src/serverinfo.sh"
-    "$CLONE_DIR/serverinfo-setup/serverinfo.sh"
-    "$CLONE_DIR/src/serverinfo.sh"
-)
-REPO_SERVERINFO=""
-for p in "${CANDIDATES[@]}"; do
-    [[ -f "$p" ]] && { REPO_SERVERINFO="$p"; break; }
-done
-if [[ -z "$REPO_SERVERINFO" ]]; then
-    echo "ERROR: serverinfo.sh not found in repo"
-    exit 1
-fi
-
-# deploy fail2ban configs if present
+# locate serverinfo and fail2ban configs in repo
 REPO_FAIL2BAN_DIR=""
 for d in "$CLONE_DIR/serverinfo-setup/src/fail2ban-configs" "$CLONE_DIR/fail2ban-configs" "$CLONE_DIR/src/fail2ban-configs"; do
     [[ -d "$d" ]] && { REPO_FAIL2BAN_DIR="$d"; break; }
 done
 
+REPO_SERVERINFO=""
+for p in "$CLONE_DIR/serverinfo.sh" "$CLONE_DIR/serverinfo-setup/src/serverinfo.sh" "$CLONE_DIR/src/serverinfo.sh"; do
+    [[ -f "$p" ]] && { REPO_SERVERINFO="$p"; break; }
+done
+if [[ -z "$REPO_SERVERINFO" ]]; then
+    echo "ERROR: serverinfo.sh not found in repo"; exit 1
+fi
+
+# === Interactive AbuseIPDB prompt (before deploying configs) ===
+ABUSE_ENABLE="no"
+ABUSE_APIKEY=""
+ABUSE_APPROVED="no"
+
+if [[ -n "$REPO_FAIL2BAN_DIR" && -f "$REPO_FAIL2BAN_DIR/action.d/abuseipdb.py" ]]; then
+    read -r -p "Enable AbuseIPDB reporting? [y/N]: " resp
+    resp=${resp:-N}
+    if [[ "$resp" =~ ^[Yy]$ ]]; then
+        ABUSE_ENABLE="yes"
+        read -r -s -p "Enter AbuseIPDB API key (input hidden): " APIKEY
+        echo
+        APIKEY=${APIKEY:-}
+        if [[ -z "$APIKEY" ]]; then
+            echo "No API key provided; AbuseIPDB will remain disabled."
+            ABUSE_ENABLE="no"
+        else
+            ABUSE_APIKEY="$APIKEY"
+            read -r -p "Is your AbuseIPDB account approved for automated reporting? [y/N]: " apr
+            apr=${apr:-N}
+            if [[ "$apr" =~ ^[Yy]$ ]]; then
+                ABUSE_APPROVED="yes"
+            else
+                ABUSE_APPROVED="no"
+            fi
+        fi
+    fi
+else
+    echo "No AbuseIPDB action script found in repo; skipping AbuseIPDB prompt."
+fi
+# === end AbuseIPDB prompt ===
+
+# deploy fail2ban configs if present (copy first, then adjust for AbuseIPDB)
 if [[ -n "$REPO_FAIL2BAN_DIR" ]]; then
-    echo "==> Copying fail2ban configs from $REPO_FAIL2BAN_DIR"
+    echo "==> Deploying fail2ban configs from $REPO_FAIL2BAN_DIR"
     mkdir -p /etc/fail2ban
     [[ -f "$REPO_FAIL2BAN_DIR/jail.local" ]] && cp -a "$REPO_FAIL2BAN_DIR/jail.local" /etc/fail2ban/jail.local && chmod 644 /etc/fail2ban/jail.local
+
     for sub in filter.d action.d jail.d; do
         if [[ -d "$REPO_FAIL2BAN_DIR/$sub" ]]; then
             mkdir -p "/etc/fail2ban/$sub"
@@ -128,14 +148,41 @@ if [[ -n "$REPO_FAIL2BAN_DIR" ]]; then
             fi
         fi
     done
+
+    # If user enabled AbuseIPDB and provided API key, inject it into deployed action script
+    if [[ "$ABUSE_ENABLE" == "yes" && -n "$ABUSE_APIKEY" && -f "/etc/fail2ban/action.d/abuseipdb.py" ]]; then
+        dst="/etc/fail2ban/action.d/abuseipdb.py"
+        # escape for sed
+        esc=$(printf '%s' "$ABUSE_APIKEY" | sed -e 's/[\/&]/\\&/g')
+        # replace placeholder $APIKEYS (works whether quoted or not)
+        sed -i.bak -E "s/\\\$APIKEYS/${esc}/g" "$dst" || true
+        chown root:root "$dst"
+        chmod 755 "$dst"
+        echo "Injected AbuseIPDB API key into $dst (backup: ${dst}.bak)"
+    fi
+
+    # If user approved automated reporting, uncomment abuseipdb lines in deployed configs (make backups)
+    if [[ "$ABUSE_ENABLE" == "yes" && "$ABUSE_APPROVED" == "yes" ]]; then
+        echo "Enabling AbuseIPDB lines in deployed jail/action configs (backups created with .bak)"
+        # uncomment lines mentioning abuseipdb in jail.local and jail.d files
+        if [[ -f /etc/fail2ban/jail.local ]]; then
+            sed -i.bak -E 's/^[[:space:]]*#[[:space:]]*(.*abuseipdb.*)/\1/' /etc/fail2ban/jail.local || true
+        fi
+        for jf in /etc/fail2ban/jail.d/*; do
+            [[ -f "$jf" ]] && sed -i.bak -E 's/^[[:space:]]*#[[:space:]]*(.*abuseipdb.*)/\1/' "$jf" || true
+        done
+        # action.d files (mail.conf or others referencing abuseipdb)
+        for af in /etc/fail2ban/action.d/*; do
+            [[ -f "$af" ]] && grep -qi "abuseipdb" "$af" 2>/dev/null && sed -i.bak -E 's/^[[:space:]]*#[[:space:]]*(.*abuseipdb.*)/\1/' "$af" || true
+        done
+    fi
 else
-    echo "==> No fail2ban-configs in repo, skipping"
+    echo "==> No fail2ban-configs in repo; skipping deploy"
 fi
 
-echo "==> Enable and restart fail2ban"
+echo "==> Enable and restart fail2ban (will fail if configs reference missing filters/logs)"
 systemctl enable --now fail2ban || true
 systemctl restart fail2ban || true
-
 command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status || true
 
 echo "==> Install serverinfo script and symlink"
@@ -150,3 +197,4 @@ echo "==> Test run (non-fatal)"
 bash /etc/profile.d/serverinfo.sh || true
 
 echo "Done. Backups (if any): $BACKUP_DIR"
+exit 0
