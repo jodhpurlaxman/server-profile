@@ -104,7 +104,7 @@ ABUSE_APIKEY=""
 ABUSE_APPROVED="no"
 
 if [[ -n "$REPO_FAIL2BAN_DIR" && -f "$REPO_FAIL2BAN_DIR/action.d/abuseipdb.py" ]]; then
-    read -r -p "Enable AbuseIPDB reporting? [y/N]: " resp
+    read -r -p "Would you like to use AbuseIPDB which require account at https://abuseipdb.com? [y/N]: " resp
     resp=${resp:-N}
     if [[ "$resp" =~ ^[Yy]$ ]]; then
         ABUSE_ENABLE="yes"
@@ -116,7 +116,7 @@ if [[ -n "$REPO_FAIL2BAN_DIR" && -f "$REPO_FAIL2BAN_DIR/action.d/abuseipdb.py" ]
             ABUSE_ENABLE="no"
         else
             ABUSE_APIKEY="$APIKEY"
-            read -r -p "Is your AbuseIPDB account approved for automated reporting? [y/N]: " apr
+            read -r -p "Is your AbuseIPDB account approved for reporting AbuseIP? [y/N]: " apr
             apr=${apr:-N}
             if [[ "$apr" =~ ^[Yy]$ ]]; then
                 ABUSE_APPROVED="yes"
